@@ -4,6 +4,9 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
+// Bumpa este valor a cada build pra você saber qual versão está no celular.
+const String kAppVersion = 'v2.0';
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setPreferredOrientations([
@@ -170,7 +173,23 @@ class _PlayerPageState extends State<PlayerPage> {
       backgroundColor: Colors.black,
       appBar: AppBar(
         backgroundColor: Colors.black,
-        title: const Text('Futemax Clean'),
+        title: Row(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.baseline,
+          textBaseline: TextBaseline.alphabetic,
+          children: [
+            const Text('Futemax Clean'),
+            const SizedBox(width: 8),
+            Text(
+              kAppVersion,
+              style: TextStyle(
+                fontSize: 12,
+                color: Colors.greenAccent[400],
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
