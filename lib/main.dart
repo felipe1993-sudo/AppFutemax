@@ -5,13 +5,20 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-const String kAppVersion = 'v3.0';
+const String kAppVersion = 'v4.0';
+const String kInitialUrl = 'https://futemax.bot/';
 
-// Em true, mostra painel diagnóstico embaixo e DESATIVA o JS de limpeza.
-// Quando o site estiver carregando OK, vire false e bumpa kAppVersion.
+// Quando true, mostra painel de logs embaixo (não desativa nada — só observa).
+// Vire false depois que tudo estiver redondo e a interface fica limpa.
 const bool kDiagnosticMode = true;
 
-const String kInitialUrl = 'https://futemax.bot/';
+// Domínios cujo TOP-LEVEL navigation é permitido. Tudo fora dessa lista é
+// bloqueado (popups de aposta, cloak ads, etc.). Recursos do site
+// (imagens, CSS, JS, iframes) NÃO passam por essa lista — só navegações
+// reais do frame principal.
+const List<String> kAllowedNavHosts = <String>[
+  'futemax.bot',
+];
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -49,43 +56,72 @@ class _PlayerPageState extends State<PlayerPage> {
   late final WebViewController _controller;
   bool _isLoading = true;
   int _loadProgress = 0;
+  int _blockedCount = 0;
   String _currentUrl = '';
   String _status = 'starting';
   final List<String> _logs = <String>[];
 
+  // Anti-popup / anti-redirect agressivo, mas sem mexer no layout do site.
   static const String _cleanupScript = r"""
     (function () {
       try {
+        const SAFE_HOST = location.host.replace(/^www\./, '');
+        function isSameSite(href) {
+          try {
+            const u = new URL(href, location.href);
+            const h = u.host.replace(/^www\./, '');
+            return h === SAFE_HOST || h.endsWith('.' + SAFE_HOST);
+          } catch (e) { return false; }
+        }
+
+        const _origOpen = window.open;
+        window.open = function (url) {
+          try { if (!url || !isSameSite(url)) return null; } catch (e) {}
+          return _origOpen ? _origOpen.apply(window, arguments) : null;
+        };
+
+        document.addEventListener('click', function (e) {
+          try {
+            const a = e.target && e.target.closest ? e.target.closest('a') : null;
+            if (!a) return;
+            const href = a.getAttribute('href') || '';
+            if (!href) return;
+            const ext = !isSameSite(a.href);
+            if (ext) {
+              e.preventDefault();
+              e.stopPropagation();
+            } else if (a.getAttribute('target') === '_blank') {
+              a.setAttribute('target', '_self');
+            }
+          } catch (err) {}
+        }, true);
+
+        try {
+          const _replace = window.location.replace.bind(window.location);
+          window.location.replace = function (url) {
+            if (url && !isSameSite(url)) return;
+            return _replace(url);
+          };
+          const _assign = window.location.assign.bind(window.location);
+          window.location.assign = function (url) {
+            if (url && !isSameSite(url)) return;
+            return _assign(url);
+          };
+        } catch (e) {}
+
         const adHostFragments = [
           'doubleclick.net','googlesyndication.com','googleadservices.com',
           'adservice.google','popcash','propellerads','exoclick',
           'adsterra','popads','onclickads','revcontent','taboola',
           'outbrain.com','mgid.com','adnxs.com','rubiconproject',
           'criteo.com','smartadserver','contentabc','clickadu',
-          'adsterra.com','popunder','popms.','poprclma','dmpxs.com'
+          'adsterra.com','popunder','popms.','poprclma','dmpxs.com',
+          'catlinesallicts','kg-br.com','betano','bet365','sportingbet',
+          'incomeaccess','revenue.','clickfunnel','linkbucks',
+          'adskeeper','smartyads','mediavenus','onelink','trackofa',
+          'trafficstars','juicyads','affilae','clickdealer','offerwall'
         ];
-        function isExternal(href) {
-          try {
-            const u = new URL(href, location.href);
-            return u.host && u.host !== location.host;
-          } catch (e) { return false; }
-        }
-        const _origOpen = window.open;
-        window.open = function (url) {
-          try { if (url && isExternal(url)) return null; } catch (e) {}
-          return _origOpen ? _origOpen.apply(window, arguments) : null;
-        };
-        document.addEventListener('click', function (e) {
-          try {
-            const a = e.target && e.target.closest ? e.target.closest('a') : null;
-            if (!a) return;
-            const isBlank = a.getAttribute('target') === '_blank';
-            const ext = isExternal(a.href);
-            if (ext && isBlank) { e.preventDefault(); e.stopPropagation(); }
-            else if (isBlank) { a.setAttribute('target', '_self'); }
-          } catch (err) {}
-        }, true);
-        function hideAdNetworkIframes() {
+        function nukeAds() {
           document.querySelectorAll('iframe').forEach(function (el) {
             const src = (el.src || el.getAttribute('data-src') || '').toLowerCase();
             if (!src) return;
@@ -96,11 +132,20 @@ class _PlayerPageState extends State<PlayerPage> {
           document.querySelectorAll('ins.adsbygoogle').forEach(function (el) {
             el.style.setProperty('display', 'none', 'important');
           });
+          document
+            .querySelectorAll('a[href*="catlinesallicts"], a[href*="kg-br.com"], a[href*="betano"]')
+            .forEach(function (el) {
+              el.removeAttribute('href');
+              el.style.setProperty('pointer-events', 'none', 'important');
+            });
         }
-        hideAdNetworkIframes();
-        new MutationObserver(hideAdNetworkIframes)
-          .observe(document.documentElement, { childList: true, subtree: true });
-      } catch (err) {}
+        nukeAds();
+        new MutationObserver(nukeAds).observe(
+          document.documentElement, { childList: true, subtree: true }
+        );
+
+        window.onbeforeunload = null;
+      } catch (err) { /* silencioso */ }
     })();
   """;
 
@@ -108,10 +153,7 @@ class _PlayerPageState extends State<PlayerPage> {
     (function () {
       try {
         console.log('[diag] href=' + location.href);
-        console.log('[diag] title=' + document.title);
         console.log('[diag] body.children=' + (document.body ? document.body.children.length : 'no-body'));
-        console.log('[diag] readyState=' + document.readyState);
-        console.log('[diag] ua=' + navigator.userAgent.substring(0, 80));
       } catch (e) { console.log('[diag] err ' + e.message); }
     })();
   """;
@@ -120,8 +162,21 @@ class _PlayerPageState extends State<PlayerPage> {
     if (!mounted) return;
     setState(() {
       _logs.insert(0, s);
-      if (_logs.length > 30) _logs.removeRange(30, _logs.length);
+      if (_logs.length > 40) _logs.removeRange(40, _logs.length);
     });
+  }
+
+  bool _isAllowedHost(String urlString) {
+    if (urlString.isEmpty || urlString == 'about:blank') return false;
+    Uri uri;
+    try {
+      uri = Uri.parse(urlString);
+    } catch (_) {
+      return false;
+    }
+    final host = uri.host.replaceFirst(RegExp(r'^www\.'), '');
+    if (host.isEmpty) return false;
+    return kAllowedNavHosts.any((h) => host == h || host.endsWith('.$h'));
   }
 
   @override
@@ -157,9 +212,7 @@ class _PlayerPageState extends State<PlayerPage> {
               _status = 'loading';
             });
             _addLog('-> started: $url');
-            if (!kDiagnosticMode) {
-              controller.runJavaScript(_cleanupScript);
-            }
+            controller.runJavaScript(_cleanupScript);
           },
           onPageFinished: (url) {
             setState(() {
@@ -168,9 +221,7 @@ class _PlayerPageState extends State<PlayerPage> {
               _status = 'finished';
             });
             _addLog('-> finished: $url');
-            if (!kDiagnosticMode) {
-              controller.runJavaScript(_cleanupScript);
-            }
+            controller.runJavaScript(_cleanupScript);
             controller.runJavaScript(_diagnosticPing);
           },
           onWebResourceError: (error) {
@@ -187,21 +238,14 @@ class _PlayerPageState extends State<PlayerPage> {
             );
           },
           onNavigationRequest: (request) {
-            if (kDiagnosticMode) {
-              _addLog('navReq: ${request.url}');
+            if (_isAllowedHost(request.url)) {
+              _addLog('navReq OK: ${request.url}');
               return NavigationDecision.navigate;
             }
-            final url = request.url.toLowerCase();
-            const adHosts = [
-              'doubleclick.net', 'googlesyndication', 'googleadservices',
-              'adservice.google', 'popcash', 'propellerads', 'exoclick',
-              'adsterra', 'popads', 'onclickads', 'revcontent', 'taboola',
-              'outbrain', 'mgid'
-            ];
-            if (adHosts.any((h) => url.contains(h))) {
-              return NavigationDecision.prevent;
-            }
-            return NavigationDecision.navigate;
+            // Bloqueia popup/cloak/redirect de aposta e about:blank
+            setState(() => _blockedCount++);
+            _addLog('BLOCKED: ${request.url}');
+            return NavigationDecision.prevent;
           },
         ),
       );
@@ -217,9 +261,17 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _openInSafari() async {
-    final uri = Uri.parse(_currentUrl.isNotEmpty ? _currentUrl : kInitialUrl);
+    String urlStr = kInitialUrl;
+    try {
+      urlStr = await _controller.currentUrl() ?? kInitialUrl;
+    } catch (_) {}
+    final uri = Uri.parse(urlStr);
     final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
     _addLog('openSafari($uri) -> $ok');
+  }
+
+  Future<void> _goHome() async {
+    await _controller.loadRequest(Uri.parse(kInitialUrl));
   }
 
   Future<void> _copyLogs() async {
@@ -254,9 +306,28 @@ class _PlayerPageState extends State<PlayerPage> {
                 fontWeight: FontWeight.w600,
               ),
             ),
+            if (_blockedCount > 0) ...[
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: Colors.red[700],
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  '$_blockedCount blk',
+                  style: const TextStyle(fontSize: 10, color: Colors.white),
+                ),
+              ),
+            ],
           ],
         ),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.home),
+            tooltip: 'Início',
+            onPressed: _goHome,
+          ),
           IconButton(
             icon: const Icon(Icons.open_in_browser),
             tooltip: 'Abrir no Safari',
@@ -278,7 +349,7 @@ class _PlayerPageState extends State<PlayerPage> {
             if (kDiagnosticMode)
               Container(
                 color: Colors.grey[900],
-                constraints: const BoxConstraints(maxHeight: 240),
+                constraints: const BoxConstraints(maxHeight: 200),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   mainAxisSize: MainAxisSize.min,
@@ -293,7 +364,7 @@ class _PlayerPageState extends State<PlayerPage> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 Text(
-                                  'status: $_status • progress: $_loadProgress%',
+                                  'status: $_status • $_loadProgress% • blocked: $_blockedCount',
                                   style: const TextStyle(
                                     fontSize: 11,
                                     color: Colors.cyanAccent,
@@ -319,6 +390,17 @@ class _PlayerPageState extends State<PlayerPage> {
                             tooltip: 'Copiar logs',
                             onPressed: _copyLogs,
                           ),
+                          IconButton(
+                            iconSize: 18,
+                            padding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(
+                              Icons.delete_outline,
+                              color: Colors.white70,
+                            ),
+                            tooltip: 'Limpar logs',
+                            onPressed: () => setState(_logs.clear),
+                          ),
                         ],
                       ),
                     ),
@@ -330,8 +412,11 @@ class _PlayerPageState extends State<PlayerPage> {
                           final line = _logs[i];
                           Color color = Colors.white70;
                           if (line.startsWith('!!')) color = Colors.redAccent;
-                          if (line.startsWith('->')) color = Colors.greenAccent;
+                          if (line.startsWith('-> ')) color = Colors.greenAccent;
                           if (line.startsWith('[js:')) color = Colors.amberAccent;
+                          if (line.startsWith('BLOCKED')) {
+                            color = Colors.orangeAccent;
+                          }
                           return Text(
                             line,
                             style: TextStyle(
