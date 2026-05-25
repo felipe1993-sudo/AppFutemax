@@ -5,19 +5,62 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-const String kAppVersion = 'v4.0';
+const String kAppVersion = 'v5.0';
 const String kInitialUrl = 'https://futemax.bot/';
 
 // Quando true, mostra painel de logs embaixo (não desativa nada — só observa).
 // Vire false depois que tudo estiver redondo e a interface fica limpa.
 const bool kDiagnosticMode = true;
 
-// Domínios cujo TOP-LEVEL navigation é permitido. Tudo fora dessa lista é
-// bloqueado (popups de aposta, cloak ads, etc.). Recursos do site
-// (imagens, CSS, JS, iframes) NÃO passam por essa lista — só navegações
-// reais do frame principal.
-const List<String> kAllowedNavHosts = <String>[
-  'futemax.bot',
+// BLACKLIST de hosts: navegação top-level pra esses domínios é bloqueada.
+// Pega ad networks, cloaks de redirecionamento e sites de aposta que
+// se passam por player. Players legítimos (streamtape, vidsrc, embed.*)
+// continuam funcionando normalmente.
+const List<String> kBlockedHostFragments = <String>[
+  // Cloaks / redirecionadores agressivos
+  'catlinesallicts',
+  'catlines',
+  'kg-br.com',
+  'incomeaccess',
+  'trackofa',
+  'clickdealer',
+  'offerwall',
+  'affilae',
+  'linkbucks',
+  // Apostas (afiliação)
+  'betano',
+  'bet365',
+  'sportingbet',
+  'betfair',
+  'pixbet',
+  'kto.com',
+  'bet7k',
+  'galera.bet',
+  'blaze.com',
+  // Ad networks
+  'doubleclick.net',
+  'googlesyndication.com',
+  'googleadservices.com',
+  'popcash',
+  'propellerads',
+  'exoclick',
+  'adsterra',
+  'popads',
+  'onclickads',
+  'revcontent',
+  'taboola',
+  'outbrain',
+  'mgid.com',
+  'adnxs.com',
+  'rubiconproject',
+  'criteo',
+  'smartadserver',
+  'clickadu',
+  'popunder',
+  'juicyads',
+  'trafficstars',
+  'adskeeper',
+  'smartyads',
 ];
 
 void main() {
@@ -61,89 +104,113 @@ class _PlayerPageState extends State<PlayerPage> {
   String _status = 'starting';
   final List<String> _logs = <String>[];
 
-  // Anti-popup / anti-redirect agressivo, mas sem mexer no layout do site.
+  // Anti-popup / anti-redirect inteligente:
+  // - bloqueia abertura de popups de spam (ad networks, apostas)
+  // - permite player externo legítimo (streamtape, vidsrc, etc.)
+  //   redirecionando-o para a janela principal em vez de popup
   static const String _cleanupScript = r"""
     (function () {
       try {
-        const SAFE_HOST = location.host.replace(/^www\./, '');
-        function isSameSite(href) {
-          try {
-            const u = new URL(href, location.href);
-            const h = u.host.replace(/^www\./, '');
-            return h === SAFE_HOST || h.endsWith('.' + SAFE_HOST);
-          } catch (e) { return false; }
+        const SPAM_FRAGMENTS = [
+          'catlinesallicts','catlines','kg-br','incomeaccess','trackofa',
+          'clickdealer','offerwall','affilae','linkbucks',
+          'betano','bet365','sportingbet','betfair','pixbet','kto.com',
+          'bet7k','galera.bet','blaze.com',
+          'doubleclick.net','googlesyndication.com','googleadservices.com',
+          'popcash','propellerads','exoclick','adsterra','popads',
+          'onclickads','revcontent','taboola','outbrain','mgid.com',
+          'adnxs.com','rubiconproject','criteo','smartadserver',
+          'clickadu','popunder','juicyads','trafficstars','adskeeper'
+        ];
+        function isSpam(url) {
+          if (!url) return false;
+          const u = String(url).toLowerCase();
+          return SPAM_FRAGMENTS.some(function (f) { return u.indexOf(f) !== -1; });
         }
 
+        // 1) window.open: bloqueia spam, redireciona player legítimo p/ janela atual
         const _origOpen = window.open;
         window.open = function (url) {
-          try { if (!url || !isSameSite(url)) return null; } catch (e) {}
-          return _origOpen ? _origOpen.apply(window, arguments) : null;
+          try {
+            if (!url) return null;
+            if (isSpam(url)) {
+              console.log('[clean] popup blocked: ' + url);
+              return null;
+            }
+            // URL legítima (player ou link interno) → navega janela principal
+            console.log('[clean] popup -> location: ' + url);
+            window.location.href = url;
+            return window;
+          } catch (e) {
+            return _origOpen ? _origOpen.apply(window, arguments) : null;
+          }
         };
 
+        // 2) Cliques em <a target="_blank"> spam: bloqueia
+        //    Cliques em <a target="_blank"> player: força mesma janela
         document.addEventListener('click', function (e) {
           try {
             const a = e.target && e.target.closest ? e.target.closest('a') : null;
             if (!a) return;
-            const href = a.getAttribute('href') || '';
+            const href = a.href || a.getAttribute('href') || '';
             if (!href) return;
-            const ext = !isSameSite(a.href);
-            if (ext) {
+            if (isSpam(href)) {
+              console.log('[clean] click blocked: ' + href);
               e.preventDefault();
               e.stopPropagation();
-            } else if (a.getAttribute('target') === '_blank') {
+              return;
+            }
+            if (a.getAttribute('target') === '_blank') {
               a.setAttribute('target', '_self');
             }
           } catch (err) {}
         }, true);
 
+        // 3) location.replace / location.assign para spam: bloqueia
         try {
           const _replace = window.location.replace.bind(window.location);
           window.location.replace = function (url) {
-            if (url && !isSameSite(url)) return;
+            if (isSpam(url)) {
+              console.log('[clean] replace blocked: ' + url);
+              return;
+            }
             return _replace(url);
           };
           const _assign = window.location.assign.bind(window.location);
           window.location.assign = function (url) {
-            if (url && !isSameSite(url)) return;
+            if (isSpam(url)) {
+              console.log('[clean] assign blocked: ' + url);
+              return;
+            }
             return _assign(url);
           };
         } catch (e) {}
 
-        const adHostFragments = [
-          'doubleclick.net','googlesyndication.com','googleadservices.com',
-          'adservice.google','popcash','propellerads','exoclick',
-          'adsterra','popads','onclickads','revcontent','taboola',
-          'outbrain.com','mgid.com','adnxs.com','rubiconproject',
-          'criteo.com','smartadserver','contentabc','clickadu',
-          'adsterra.com','popunder','popms.','poprclma','dmpxs.com',
-          'catlinesallicts','kg-br.com','betano','bet365','sportingbet',
-          'incomeaccess','revenue.','clickfunnel','linkbucks',
-          'adskeeper','smartyads','mediavenus','onelink','trackofa',
-          'trafficstars','juicyads','affilae','clickdealer','offerwall'
-        ];
+        // 4) Esconde iframes de ad-networks e remove links de afiliação
         function nukeAds() {
           document.querySelectorAll('iframe').forEach(function (el) {
             const src = (el.src || el.getAttribute('data-src') || '').toLowerCase();
-            if (!src) return;
-            if (adHostFragments.some(function (h) { return src.indexOf(h) !== -1; })) {
+            if (src && isSpam(src)) {
               el.style.setProperty('display', 'none', 'important');
             }
           });
           document.querySelectorAll('ins.adsbygoogle').forEach(function (el) {
             el.style.setProperty('display', 'none', 'important');
           });
-          document
-            .querySelectorAll('a[href*="catlinesallicts"], a[href*="kg-br.com"], a[href*="betano"]')
-            .forEach(function (el) {
+          document.querySelectorAll('a').forEach(function (el) {
+            const href = el.getAttribute('href') || '';
+            if (isSpam(href)) {
               el.removeAttribute('href');
               el.style.setProperty('pointer-events', 'none', 'important');
-            });
+            }
+          });
         }
         nukeAds();
         new MutationObserver(nukeAds).observe(
           document.documentElement, { childList: true, subtree: true }
         );
 
+        // 5) Mata onbeforeunload (alguns sites usam pra forçar popup)
         window.onbeforeunload = null;
       } catch (err) { /* silencioso */ }
     })();
@@ -166,17 +233,11 @@ class _PlayerPageState extends State<PlayerPage> {
     });
   }
 
-  bool _isAllowedHost(String urlString) {
-    if (urlString.isEmpty || urlString == 'about:blank') return false;
-    Uri uri;
-    try {
-      uri = Uri.parse(urlString);
-    } catch (_) {
-      return false;
-    }
-    final host = uri.host.replaceFirst(RegExp(r'^www\.'), '');
-    if (host.isEmpty) return false;
-    return kAllowedNavHosts.any((h) => host == h || host.endsWith('.$h'));
+  bool _isBlockedHost(String urlString) {
+    if (urlString.isEmpty) return false;
+    if (urlString == 'about:blank') return true;
+    final lower = urlString.toLowerCase();
+    return kBlockedHostFragments.any((f) => lower.contains(f));
   }
 
   @override
@@ -238,14 +299,13 @@ class _PlayerPageState extends State<PlayerPage> {
             );
           },
           onNavigationRequest: (request) {
-            if (_isAllowedHost(request.url)) {
-              _addLog('navReq OK: ${request.url}');
-              return NavigationDecision.navigate;
+            if (_isBlockedHost(request.url)) {
+              setState(() => _blockedCount++);
+              _addLog('BLOCKED: ${request.url}');
+              return NavigationDecision.prevent;
             }
-            // Bloqueia popup/cloak/redirect de aposta e about:blank
-            setState(() => _blockedCount++);
-            _addLog('BLOCKED: ${request.url}');
-            return NavigationDecision.prevent;
+            _addLog('navReq OK: ${request.url}');
+            return NavigationDecision.navigate;
           },
         ),
       );
