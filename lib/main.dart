@@ -5,29 +5,23 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-const String kAppVersion = 'v5.0';
+const String kAppVersion = 'v6.0';
 const String kInitialUrl = 'https://futemax.bot/';
 
 // Quando true, mostra painel de logs embaixo (não desativa nada — só observa).
 // Vire false depois que tudo estiver redondo e a interface fica limpa.
 const bool kDiagnosticMode = true;
 
-// BLACKLIST de hosts: navegação top-level pra esses domínios é bloqueada.
-// Pega ad networks, cloaks de redirecionamento e sites de aposta que
-// se passam por player. Players legítimos (streamtape, vidsrc, embed.*)
-// continuam funcionando normalmente.
+// BLACKLIST de hosts/fragmentos: navegação top-level que contenha um
+// destes é bloqueada. Pega ad networks, cloaks de redirecionamento
+// e bookmakers brasileiros. Players legítimos (streamtape, vidsrc,
+// embed.*) continuam funcionando.
 const List<String> kBlockedHostFragments = <String>[
-  // Cloaks / redirecionadores agressivos
-  'catlinesallicts',
-  'catlines',
-  'kg-br.com',
-  'incomeaccess',
-  'trackofa',
-  'clickdealer',
-  'offerwall',
-  'affilae',
-  'linkbucks',
-  // Apostas (afiliação)
+  // === TLD brasileiro de apostas regularizadas ===
+  '.bet.br',
+  // === Bookmakers / cassinos ===
+  'estrelabet',
+  'novibet',
   'betano',
   'bet365',
   'sportingbet',
@@ -37,7 +31,55 @@ const List<String> kBlockedHostFragments = <String>[
   'bet7k',
   'galera.bet',
   'blaze.com',
-  // Ad networks
+  'esportesdasorte',
+  'esportes-da-sorte',
+  'esportedasorte',
+  'vaidebet',
+  'br4bet',
+  'betesporte',
+  'betnacional',
+  'hiperbet',
+  'lebron',
+  'jogaomega',
+  'mc.games',
+  'betpix',
+  'super7bet',
+  'brazinobet',
+  '7games',
+  'betsul',
+  'betvip',
+  'bullsbet',
+  'cbet.gg',
+  'betcris',
+  'betway',
+  'parimatch',
+  'unibet',
+  'leovegas',
+  'rivalo',
+  'mrjack',
+  'pin-up',
+  '1xbet',
+  '888sport',
+  'betclic',
+  'realsbet',
+  'aposta',
+  'cassino',
+  '/casino',
+  // === Cloaks / Affiliate networks ===
+  'catlinesallicts',
+  'catlines',
+  'kg-br.com',
+  '.partners/',
+  'novibet.partners',
+  'incomeaccess',
+  'trackofa',
+  'clickdealer',
+  'offerwall',
+  'affilae',
+  'linkbucks',
+  'redirect.appsflyer',
+  'tracking.',
+  // === Ad networks ===
   'doubleclick.net',
   'googlesyndication.com',
   'googleadservices.com',
@@ -112,10 +154,21 @@ class _PlayerPageState extends State<PlayerPage> {
     (function () {
       try {
         const SPAM_FRAGMENTS = [
-          'catlinesallicts','catlines','kg-br','incomeaccess','trackofa',
-          'clickdealer','offerwall','affilae','linkbucks',
-          'betano','bet365','sportingbet','betfair','pixbet','kto.com',
-          'bet7k','galera.bet','blaze.com',
+          // TLDs / bookmakers BR
+          '.bet.br','estrelabet','novibet','betano','bet365','sportingbet',
+          'betfair','pixbet','kto.com','bet7k','galera.bet','blaze.com',
+          'esportesdasorte','esportes-da-sorte','esportedasorte',
+          'vaidebet','br4bet','betesporte','betnacional','hiperbet',
+          'lebron','jogaomega','mc.games','betpix','super7bet','brazinobet',
+          '7games','betsul','betvip','bullsbet','cbet.gg','betcris',
+          'betway','parimatch','unibet','leovegas','rivalo','mrjack',
+          'pin-up','1xbet','888sport','betclic','realsbet',
+          'aposta','cassino','/casino',
+          // Cloaks / affiliate
+          'catlinesallicts','catlines','kg-br','.partners/','novibet.partners',
+          'incomeaccess','trackofa','clickdealer','offerwall','affilae',
+          'linkbucks','redirect.appsflyer','tracking.',
+          // Ad networks
           'doubleclick.net','googlesyndication.com','googleadservices.com',
           'popcash','propellerads','exoclick','adsterra','popads',
           'onclickads','revcontent','taboola','outbrain','mgid.com',
