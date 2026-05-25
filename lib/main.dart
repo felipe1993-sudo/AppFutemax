@@ -1,11 +1,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-// Bumpa este valor a cada build pra você saber qual versão está no celular.
-const String kAppVersion = 'v2.0';
+const String kAppVersion = 'v3.0';
+
+// Em true, mostra painel diagnóstico embaixo e DESATIVA o JS de limpeza.
+// Quando o site estiver carregando OK, vire false e bumpa kAppVersion.
+const bool kDiagnosticMode = true;
+
+const String kInitialUrl = 'https://futemax.bot/';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -26,7 +32,7 @@ class FutemaxCleanApp extends StatelessWidget {
       title: 'Futemax Clean',
       debugShowCheckedModeBanner: false,
       theme: ThemeData.dark(useMaterial3: true),
-      home: const PlayerPage(initialUrl: 'https://futemax.bot/'),
+      home: const PlayerPage(initialUrl: kInitialUrl),
     );
   }
 }
@@ -43,10 +49,10 @@ class _PlayerPageState extends State<PlayerPage> {
   late final WebViewController _controller;
   bool _isLoading = true;
   int _loadProgress = 0;
+  String _currentUrl = '';
+  String _status = 'starting';
+  final List<String> _logs = <String>[];
 
-  // Script JS injetado para "limpar" a página de forma CIRÚRGICA:
-  // só bloqueia anúncios e pop-unders claramente identificados pela URL/host,
-  // SEM tocar em IDs/classes ambíguos do próprio site.
   static const String _cleanupScript = r"""
     (function () {
       try {
@@ -58,22 +64,17 @@ class _PlayerPageState extends State<PlayerPage> {
           'criteo.com','smartadserver','contentabc','clickadu',
           'adsterra.com','popunder','popms.','poprclma','dmpxs.com'
         ];
-
         function isExternal(href) {
           try {
             const u = new URL(href, location.href);
             return u.host && u.host !== location.host;
           } catch (e) { return false; }
         }
-
-        // 1) Bloqueia window.open só quando for para fora do site
         const _origOpen = window.open;
-        window.open = function (url, target, features) {
+        window.open = function (url) {
           try { if (url && isExternal(url)) return null; } catch (e) {}
           return _origOpen ? _origOpen.apply(window, arguments) : null;
         };
-
-        // 2) Bloqueia cliques em links target=_blank externos
         document.addEventListener('click', function (e) {
           try {
             const a = e.target && e.target.closest ? e.target.closest('a') : null;
@@ -84,8 +85,6 @@ class _PlayerPageState extends State<PlayerPage> {
             else if (isBlank) { a.setAttribute('target', '_self'); }
           } catch (err) {}
         }, true);
-
-        // 3) Esconde APENAS iframes / scripts de ad networks conhecidos
         function hideAdNetworkIframes() {
           document.querySelectorAll('iframe').forEach(function (el) {
             const src = (el.src || el.getAttribute('data-src') || '').toLowerCase();
@@ -94,21 +93,36 @@ class _PlayerPageState extends State<PlayerPage> {
               el.style.setProperty('display', 'none', 'important');
             }
           });
-          // ins.adsbygoogle é o padrão do Google AdSense
           document.querySelectorAll('ins.adsbygoogle').forEach(function (el) {
             el.style.setProperty('display', 'none', 'important');
           });
         }
-
         hideAdNetworkIframes();
-        const observer = new MutationObserver(hideAdNetworkIframes);
-        observer.observe(document.documentElement, { childList: true, subtree: true });
-
-      } catch (err) {
-        try { console.log('[FutemaxClean] cleanup error:', err && err.message); } catch (e) {}
-      }
+        new MutationObserver(hideAdNetworkIframes)
+          .observe(document.documentElement, { childList: true, subtree: true });
+      } catch (err) {}
     })();
   """;
+
+  static const String _diagnosticPing = r"""
+    (function () {
+      try {
+        console.log('[diag] href=' + location.href);
+        console.log('[diag] title=' + document.title);
+        console.log('[diag] body.children=' + (document.body ? document.body.children.length : 'no-body'));
+        console.log('[diag] readyState=' + document.readyState);
+        console.log('[diag] ua=' + navigator.userAgent.substring(0, 80));
+      } catch (e) { console.log('[diag] err ' + e.message); }
+    })();
+  """;
+
+  void _addLog(String s) {
+    if (!mounted) return;
+    setState(() {
+      _logs.insert(0, s);
+      if (_logs.length > 30) _logs.removeRange(30, _logs.length);
+    });
+  }
 
   @override
   void initState() {
@@ -128,26 +142,61 @@ class _PlayerPageState extends State<PlayerPage> {
     controller = WebViewController.fromPlatformCreationParams(params)
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.black)
+      ..setOnConsoleMessage((JavaScriptConsoleMessage msg) {
+        _addLog('[js:${msg.level.name}] ${msg.message}');
+      })
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
             setState(() => _loadProgress = progress);
           },
           onPageStarted: (url) {
-            setState(() => _isLoading = true);
-            controller.runJavaScript(_cleanupScript);
+            setState(() {
+              _isLoading = true;
+              _currentUrl = url;
+              _status = 'loading';
+            });
+            _addLog('-> started: $url');
+            if (!kDiagnosticMode) {
+              controller.runJavaScript(_cleanupScript);
+            }
           },
           onPageFinished: (url) {
-            controller.runJavaScript(_cleanupScript);
-            setState(() => _isLoading = false);
+            setState(() {
+              _isLoading = false;
+              _currentUrl = url;
+              _status = 'finished';
+            });
+            _addLog('-> finished: $url');
+            if (!kDiagnosticMode) {
+              controller.runJavaScript(_cleanupScript);
+            }
+            controller.runJavaScript(_diagnosticPing);
+          },
+          onWebResourceError: (error) {
+            setState(() => _status = 'error');
+            _addLog(
+              '!! webError(${error.errorCode}) ${error.errorType?.name}: '
+              '${error.description}',
+            );
+          },
+          onHttpError: (error) {
+            _addLog(
+              '!! httpError ${error.response?.statusCode} on '
+              '${error.request?.uri}',
+            );
           },
           onNavigationRequest: (request) {
+            if (kDiagnosticMode) {
+              _addLog('navReq: ${request.url}');
+              return NavigationDecision.navigate;
+            }
             final url = request.url.toLowerCase();
             const adHosts = [
-              'doubleclick.net','googlesyndication','googleadservices',
-              'adservice.google','popcash','propellerads','exoclick',
-              'adsterra','popads','onclickads','revcontent','taboola',
-              'outbrain','mgid'
+              'doubleclick.net', 'googlesyndication', 'googleadservices',
+              'adservice.google', 'popcash', 'propellerads', 'exoclick',
+              'adsterra', 'popads', 'onclickads', 'revcontent', 'taboola',
+              'outbrain', 'mgid'
             ];
             if (adHosts.any((h) => url.contains(h))) {
               return NavigationDecision.prevent;
@@ -167,6 +216,21 @@ class _PlayerPageState extends State<PlayerPage> {
     _controller = controller;
   }
 
+  Future<void> _openInSafari() async {
+    final uri = Uri.parse(_currentUrl.isNotEmpty ? _currentUrl : kInitialUrl);
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    _addLog('openSafari($uri) -> $ok');
+  }
+
+  Future<void> _copyLogs() async {
+    final text = _logs.reversed.join('\n');
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Logs copiados')),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -181,10 +245,12 @@ class _PlayerPageState extends State<PlayerPage> {
             const Text('Futemax Clean'),
             const SizedBox(width: 8),
             Text(
-              kAppVersion,
+              kAppVersion + (kDiagnosticMode ? ' DIAG' : ''),
               style: TextStyle(
                 fontSize: 12,
-                color: Colors.greenAccent[400],
+                color: kDiagnosticMode
+                    ? Colors.amberAccent
+                    : Colors.greenAccent[400],
                 fontWeight: FontWeight.w600,
               ),
             ),
@@ -192,17 +258,94 @@ class _PlayerPageState extends State<PlayerPage> {
         ),
         actions: [
           IconButton(
+            icon: const Icon(Icons.open_in_browser),
+            tooltip: 'Abrir no Safari',
+            onPressed: _openInSafari,
+          ),
+          IconButton(
             icon: const Icon(Icons.refresh),
+            tooltip: 'Recarregar',
             onPressed: () => _controller.reload(),
           ),
         ],
       ),
       body: SafeArea(
-        child: Stack(
+        child: Column(
           children: [
-            WebViewWidget(controller: _controller),
             if (_isLoading)
               LinearProgressIndicator(value: _loadProgress / 100.0),
+            Expanded(child: WebViewWidget(controller: _controller)),
+            if (kDiagnosticMode)
+              Container(
+                color: Colors.grey[900],
+                constraints: const BoxConstraints(maxHeight: 240),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      color: Colors.black,
+                      padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  'status: $_status • progress: $_loadProgress%',
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.cyanAccent,
+                                  ),
+                                ),
+                                Text(
+                                  'url: $_currentUrl',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            iconSize: 18,
+                            padding: EdgeInsets.zero,
+                            visualDensity: VisualDensity.compact,
+                            icon: const Icon(Icons.copy, color: Colors.white70),
+                            tooltip: 'Copiar logs',
+                            onPressed: _copyLogs,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Flexible(
+                      child: ListView.builder(
+                        padding: const EdgeInsets.all(6),
+                        itemCount: _logs.length,
+                        itemBuilder: (context, i) {
+                          final line = _logs[i];
+                          Color color = Colors.white70;
+                          if (line.startsWith('!!')) color = Colors.redAccent;
+                          if (line.startsWith('->')) color = Colors.greenAccent;
+                          if (line.startsWith('[js:')) color = Colors.amberAccent;
+                          return Text(
+                            line,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: color,
+                              fontFamily: 'monospace',
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+              ),
           ],
         ),
       ),

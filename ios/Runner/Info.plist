@@ -73,6 +73,11 @@
 		<key>NSAllowsArbitraryLoadsInWebContent</key>
 		<true/>
 	</dict>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>https</string>
+		<string>http</string>
+	</array>
 	<key>UIRequiresFullScreen</key>
 	<false/>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
