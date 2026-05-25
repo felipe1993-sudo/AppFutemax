@@ -5,7 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-const String kAppVersion = 'v6.0';
+const String kAppVersion = 'v7.0';
 const String kInitialUrl = 'https://futemax.bot/';
 
 // Quando true, mostra painel de logs embaixo (não desativa nada — só observa).
@@ -103,6 +103,18 @@ const List<String> kBlockedHostFragments = <String>[
   'trafficstars',
   'adskeeper',
   'smartyads',
+  // Popunders / iclick / chains observados no Futemax
+  'rkv1.com',
+  'ladidappl.com',
+  'adsrv.eacdn',
+  'eacdn.com',
+  'iclick',
+  'whos.amung.us',
+  'wlsuperbet',
+  'aff.estrelabetpartners',
+  'estrelabetpartners',
+  'go.aff.',
+  'adservice.google',
 ];
 
 void main() {
@@ -173,7 +185,11 @@ class _PlayerPageState extends State<PlayerPage> {
           'popcash','propellerads','exoclick','adsterra','popads',
           'onclickads','revcontent','taboola','outbrain','mgid.com',
           'adnxs.com','rubiconproject','criteo','smartadserver',
-          'clickadu','popunder','juicyads','trafficstars','adskeeper'
+          'clickadu','popunder','juicyads','trafficstars','adskeeper',
+          // Popunders / iclick / chains observados
+          'rkv1.com','ladidappl.com','adsrv.eacdn','eacdn.com','iclick',
+          'whos.amung.us','wlsuperbet','aff.estrelabetpartners',
+          'estrelabetpartners','go.aff.','adservice.google'
         ];
         function isSpam(url) {
           if (!url) return false;
@@ -181,21 +197,28 @@ class _PlayerPageState extends State<PlayerPage> {
           return SPAM_FRAGMENTS.some(function (f) { return u.indexOf(f) !== -1; });
         }
 
-        // 1) window.open: bloqueia spam, redireciona player legítimo p/ janela atual
+        // 1) window.open:
+        //    - mesmo host → deixa abrir normal
+        //    - cross-origin → BLOQUEIA SEMPRE (popunder ads)
+        //    Nunca redirecionar janela principal: isso quebra player.
         const _origOpen = window.open;
         window.open = function (url) {
           try {
             if (!url) return null;
             if (isSpam(url)) {
-              console.log('[clean] popup blocked: ' + url);
+              console.log('[clean] popup blocked (spam): ' + url);
               return null;
             }
-            // URL legítima (player ou link interno) → navega janela principal
-            console.log('[clean] popup -> location: ' + url);
-            window.location.href = url;
-            return window;
+            try {
+              const u = new URL(url, location.href);
+              if (u.host === location.host) {
+                return _origOpen ? _origOpen.apply(window, arguments) : null;
+              }
+            } catch (e) {}
+            console.log('[clean] popup blocked (cross-origin): ' + url);
+            return null;
           } catch (e) {
-            return _origOpen ? _origOpen.apply(window, arguments) : null;
+            return null;
           }
         };
 
