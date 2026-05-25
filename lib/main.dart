@@ -5,7 +5,7 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-const String kAppVersion = 'v7.0';
+const String kAppVersion = 'v8.0';
 const String kInitialUrl = 'https://futemax.bot/';
 
 // Quando true, mostra painel de logs embaixo (não desativa nada — só observa).
@@ -115,6 +115,23 @@ const List<String> kBlockedHostFragments = <String>[
   'estrelabetpartners',
   'go.aff.',
   'adservice.google',
+  // Sequestro de janela observado: adjumpa->tracksummer->s.shopee
+  'adjumpa.com',
+  'tracksummer',
+  's.shopee.com.br',
+  'shopee.com.br/affiliate',
+];
+
+// Padrões genéricos de URLs de afiliação. Se a URL bate em qualquer
+// um destes (em qualquer parte), é bloqueada como redirect spam.
+final List<RegExp> kBlockedUrlPatterns = <RegExp>[
+  RegExp(r'/click\?'), // adjumpa, etc.
+  RegExp(r'/aff_c\?'), // tracksummer, hasoffers
+  RegExp(r'[?&]aff(id|iliate_?id|_sub\d?)='),
+  RegExp(r'[?&]btag='),
+  RegExp(r'[?&]tracking_id='),
+  RegExp(r'[?&]offer_id='),
+  RegExp(r'[?&]campaign_id=.*affiliate'),
 ];
 
 void main() {
@@ -313,7 +330,9 @@ class _PlayerPageState extends State<PlayerPage> {
     if (urlString.isEmpty) return false;
     if (urlString == 'about:blank') return true;
     final lower = urlString.toLowerCase();
-    return kBlockedHostFragments.any((f) => lower.contains(f));
+    if (kBlockedHostFragments.any((f) => lower.contains(f))) return true;
+    if (kBlockedUrlPatterns.any((p) => p.hasMatch(lower))) return true;
+    return false;
   }
 
   @override
@@ -334,6 +353,13 @@ class _PlayerPageState extends State<PlayerPage> {
     controller = WebViewController.fromPlatformCreationParams(params)
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.black)
+      // User Agent de Safari iOS real (com Version/ e Safari/) pra
+      // burlar cloak systems que detectam WKWebView e servem só ad.
+      ..setUserAgent(
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) '
+        'AppleWebKit/605.1.15 (KHTML, like Gecko) '
+        'Version/18.0 Mobile/15E148 Safari/604.1',
+      )
       ..setOnConsoleMessage((JavaScriptConsoleMessage msg) {
         _addLog('[js:${msg.level.name}] ${msg.message}');
       })
