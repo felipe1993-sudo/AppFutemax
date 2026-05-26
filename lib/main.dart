@@ -5,12 +5,10 @@ import 'package:webview_flutter/webview_flutter.dart';
 import 'package:webview_flutter_android/webview_flutter_android.dart';
 import 'package:webview_flutter_wkwebview/webview_flutter_wkwebview.dart';
 
-const String kAppVersion = 'v8.0';
+const String kAppVersion = 'v9.0';
 const String kInitialUrl = 'https://futemax.bot/';
 
-// Quando true, mostra painel de logs embaixo (não desativa nada — só observa).
-// Vire false depois que tudo estiver redondo e a interface fica limpa.
-const bool kDiagnosticMode = true;
+const bool kDiagnosticMode = false;
 
 // BLACKLIST de hosts/fragmentos: navegação top-level que contenha um
 // destes é bloqueada. Pega ad networks, cloaks de redirecionamento
@@ -319,7 +317,7 @@ class _PlayerPageState extends State<PlayerPage> {
   """;
 
   void _addLog(String s) {
-    if (!mounted) return;
+    if (!kDiagnosticMode || !mounted) return;
     setState(() {
       _logs.insert(0, s);
       if (_logs.length > 40) _logs.removeRange(40, _logs.length);
@@ -359,10 +357,13 @@ class _PlayerPageState extends State<PlayerPage> {
         'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) '
         'AppleWebKit/605.1.15 (KHTML, like Gecko) '
         'Version/18.0 Mobile/15E148 Safari/604.1',
-      )
-      ..setOnConsoleMessage((JavaScriptConsoleMessage msg) {
+      );
+    if (kDiagnosticMode) {
+      controller.setOnConsoleMessage((JavaScriptConsoleMessage msg) {
         _addLog('[js:${msg.level.name}] ${msg.message}');
-      })
+      });
+    }
+    controller
       ..setNavigationDelegate(
         NavigationDelegate(
           onProgress: (progress) {
@@ -385,7 +386,9 @@ class _PlayerPageState extends State<PlayerPage> {
             });
             _addLog('-> finished: $url');
             controller.runJavaScript(_cleanupScript);
-            controller.runJavaScript(_diagnosticPing);
+            if (kDiagnosticMode) {
+              controller.runJavaScript(_diagnosticPing);
+            }
           },
           onWebResourceError: (error) {
             setState(() => _status = 'error');
@@ -402,7 +405,9 @@ class _PlayerPageState extends State<PlayerPage> {
           },
           onNavigationRequest: (request) {
             if (_isBlockedHost(request.url)) {
-              setState(() => _blockedCount++);
+              if (kDiagnosticMode) {
+                setState(() => _blockedCount++);
+              }
               _addLog('BLOCKED: ${request.url}');
               return NavigationDecision.prevent;
             }
@@ -468,7 +473,7 @@ class _PlayerPageState extends State<PlayerPage> {
                 fontWeight: FontWeight.w600,
               ),
             ),
-            if (_blockedCount > 0) ...[
+            if (kDiagnosticMode && _blockedCount > 0) ...[
               const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
